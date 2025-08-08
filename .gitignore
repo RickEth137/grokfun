@@ -1,0 +1,14 @@
+# Rust/Anchor
+target/
+.anchor/
+*.log
+
+# Do NOT commit private keys
+*-keypair.json
+target/deploy/*-keypair.json
+
+# Local files
+.DS_Store
+.vscode/
+.env
+.env.*

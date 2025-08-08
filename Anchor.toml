@@ -1,0 +1,9 @@
+[programs.localnet]
+grokpad = "24rtdj9var5RBGafZqMpm9sJKJH957XXptXctQbHwnCR"
+
+[programs.devnet]
+grokpad = "24rtdj9var5RBGafZqMpm9sJKJH957XXptXctQbHwnCR"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
