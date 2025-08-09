@@ -1,0 +1,12 @@
+[workspace]
+members = ["programs/grokpad"]
+resolver = "2"
+
+[env]
+RUSTUP_TOOLCHAIN = "1.79.0"
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
+opt-level = "s"

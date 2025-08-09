@@ -12,3 +12,4 @@ target/deploy/*-keypair.json
 .vscode/
 .env
 .env.*
+node_modules
