@@ -1,9 +1,15 @@
 [programs.localnet]
-grokpad = "24rtdj9var5RBGafZqMpm9sJKJH957XXptXctQbHwnCR"
+grokpad = "PQghCjXvt7v7YYDo4rsgWJzxEQhSJmFLGjM5DPikuJE"
 
-[programs.devnet]
-grokpad = "24rtdj9var5RBGafZqMpm9sJKJH957XXptXctQbHwnCR"
+[registry]
+url = "https://api.apr.dev"
 
 [provider]
 cluster = "localnet"
 wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "anchor test"
+
+[build]
+verifiable = false
