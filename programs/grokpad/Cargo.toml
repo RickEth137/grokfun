@@ -1,0 +1,18 @@
+[package]
+name = "grokpad"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+anchor-lang = { version = "=0.30.0", features = ["init-if-needed"] }
+anchor-spl  = "=0.30.0"
+try_from = "0.3.2"
+try_from_unchecked = { path = "../../crates/try_from_unchecked" }
+
+[features]
+no-entrypoint = []
+idl-build = []
+test = []
