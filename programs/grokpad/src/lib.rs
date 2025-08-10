@@ -3,9 +3,9 @@ use anchor_spl::{
     associated_token::AssociatedToken,
     token::{self, Mint, Token, TokenAccount, Transfer},
 };
-use anchor_lang::solana_program::system_program; // for owner ID checks
+use anchor_lang::solana_program::system_program;
 
-declare_id!("PQghCjXvt7v7YYDo4rsgWJzxEQhSJmFLGjM5DPikuJE");
+declare_id!("CYUSvq2vmNZ4rcyhfKyfaTKvfeH3doxyqx69ifV3w3TP");
 
 const LAUNCH_SEED: &[u8] = b"launch";
 const STATE_SEED: &[u8] = b"launch_state";
@@ -23,12 +23,10 @@ pub mod grokpad {
         creator_fee_bps: u16,
         graduation_target_lamports: u64,
     ) -> Result<()> {
-        require!(fee_bps <= 1000, GrokError::FeeTooHigh); // Max 10%
-        require!(creator_fee_bps <= 1000, GrokError::FeeTooHigh); // Max 10%
-        // Runtime safety: ensure vault SOL PDA is a system-owned account (rent-exempt zero data)
+        const MAX_PRICE: u64 = 10_000_000_000;
+        require!(base_price_lamports > 0 && base_price_lamports <= MAX_PRICE, GrokError::InvalidParam);
+        require!(slope_lamports <= MAX_PRICE, GrokError::InvalidParam);
         require!(ctx.accounts.vault_sol_pda.owner == &system_program::ID, GrokError::InvalidOwner);
-        // creator / platform fee recipient are recorded exactly as passed; no further validation here (could add allowlist logic later)
-        
         let mint = &ctx.accounts.mint;
         let state = &mut ctx.accounts.state_pda;
         state.mint = mint.key();
@@ -41,13 +39,17 @@ pub mod grokpad {
         state.creator = ctx.accounts.creator.key();
         state.graduation_target_lamports = graduation_target_lamports;
         state.graduated = false;
-
-        let supply = ctx.accounts.vault_ata.amount;
-        state.supply_remaining = supply;
+        state.supply_remaining = 0;
         state.tokens_sold = 0;
         state.reserves_lamports = 0;
         state.platform_fee_accrued = 0;
         state.creator_fee_accrued = 0;
+        emit!(InitializeEvent {
+            mint: state.mint,
+            base_price: state.base_price_lamports,
+            slope: state.slope_lamports,
+            graduation_target_lamports: state.graduation_target_lamports,
+        });
         Ok(())
     }
 
@@ -56,18 +58,13 @@ pub mod grokpad {
         require!(amount > 0, GrokError::ZeroAmount);
         require!(!state.graduated, GrokError::LaunchGraduated);
         require!(amount <= state.supply_remaining, GrokError::NotEnoughSupply);
-        // Runtime checks for UncheckedAccount safety
         require_keys_eq!(ctx.accounts.platform_fee_recipient.key(), state.platform_fee_recipient, GrokError::InvalidOwner);
         require_keys_eq!(ctx.accounts.creator.key(), state.creator, GrokError::InvalidOwner);
         require!(ctx.accounts.vault_sol_pda.owner == &system_program::ID, GrokError::InvalidOwner);
-
-        // Units = base (whole token) units considering decimals.
         let scale = 10u128.pow(state.decimals as u32);
         let units = amount as u128 / scale;
         require!(units > 0, GrokError::ZeroUnits);
-
         let sold_units_before = state.tokens_sold as u128 / scale;
-
         let cost_u128 = linear_buy_cost(
             state.base_price_lamports as u128,
             state.slope_lamports as u128,
@@ -77,15 +74,12 @@ pub mod grokpad {
         require!(cost_u128 <= u64::MAX as u128, GrokError::Overflow);
         let cost = cost_u128 as u64;
         require!(cost <= max_cost_lamports, GrokError::SlippageExceeded);
-
         let platform_fee = cost.saturating_mul(state.fee_bps as u64) / 10_000;
         let creator_fee = cost.saturating_mul(state.creator_fee_bps as u64) / 10_000;
         let net = cost
             .checked_sub(platform_fee)
             .and_then(|v| v.checked_sub(creator_fee))
             .ok_or(GrokError::Underflow)?;
-
-        // Transfer SOL to vault PDA.
         anchor_lang::system_program::transfer(
             CpiContext::new(
                 ctx.accounts.system_program.to_account_info(),
@@ -96,8 +90,6 @@ pub mod grokpad {
             ),
             cost,
         )?;
-
-        // Transfer tokens from vault to buyer using authority PDA.
         let mint_key = ctx.accounts.mint.key();
         let authority_bump = ctx.bumps.authority_pda;
         let authority_seeds: &[&[u8]] = &[LAUNCH_SEED, mint_key.as_ref(), &[authority_bump]];
@@ -113,8 +105,6 @@ pub mod grokpad {
             ),
             amount,
         )?;
-
-        // State updates.
         state.tokens_sold = state.tokens_sold.checked_add(amount).ok_or(GrokError::Overflow)?;
         state.supply_remaining = state
             .supply_remaining
@@ -132,12 +122,22 @@ pub mod grokpad {
             .reserves_lamports
             .checked_add(net)
             .ok_or(GrokError::Overflow)?;
-
         if !state.graduated && state.reserves_lamports >= state.graduation_target_lamports {
             state.graduated = true;
+            emit!(GraduateEvent { mint: state.mint, reserves_lamports: state.reserves_lamports, tokens_sold: state.tokens_sold });
             msg!("Graduated: reserves {}", state.reserves_lamports);
         }
-
+        emit!(BuyEvent {
+            mint: state.mint,
+            buyer: ctx.accounts.buyer.key(),
+            amount,
+            cost_lamports: cost,
+            platform_fee,
+            creator_fee,
+            reserves_after: state.reserves_lamports,
+            tokens_sold_after: state.tokens_sold,
+            graduated: state.graduated,
+        });
         Ok(())
     }
 
@@ -145,19 +145,14 @@ pub mod grokpad {
         let state = &mut ctx.accounts.state_pda;
         require!(amount > 0, GrokError::ZeroAmount);
         require!(!state.graduated, GrokError::LaunchGraduated);
-        // Runtime checks for UncheckedAccount safety
         require_keys_eq!(ctx.accounts.platform_fee_recipient.key(), state.platform_fee_recipient, GrokError::InvalidOwner);
         require_keys_eq!(ctx.accounts.creator.key(), state.creator, GrokError::InvalidOwner);
         require!(ctx.accounts.vault_sol_pda.owner == &system_program::ID, GrokError::InvalidOwner);
-
         let scale = 10u128.pow(state.decimals as u32);
         let units = amount as u128 / scale;
         require!(units > 0, GrokError::ZeroUnits);
-
         let total_units_sold = state.tokens_sold as u128 / scale;
         require!(units <= total_units_sold, GrokError::Underflow);
-
-        // Refund is the cost of the last 'units' sold (reverse of buy order).
         let start_units = total_units_sold - units;
         let refund_u128 = linear_buy_cost(
             state.base_price_lamports as u128,
@@ -167,7 +162,6 @@ pub mod grokpad {
         );
         require!(refund_u128 <= u64::MAX as u128, GrokError::Overflow);
         let refund_gross = refund_u128 as u64;
-
         let platform_fee = refund_gross.saturating_mul(state.fee_bps as u64) / 10_000;
         let creator_fee = refund_gross.saturating_mul(state.creator_fee_bps as u64) / 10_000;
         let refund_net = refund_gross
@@ -176,8 +170,6 @@ pub mod grokpad {
             .ok_or(GrokError::Underflow)?;
         require!(refund_net >= min_payout_lamports, GrokError::SlippageExceeded);
         require!(refund_net <= state.reserves_lamports, GrokError::Underflow);
-
-        // Transfer tokens back to vault (seller signs).
         token::transfer(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
@@ -189,8 +181,6 @@ pub mod grokpad {
             ),
             amount,
         )?;
-
-        // Pay seller from vault SOL PDA.
         let mint_key = ctx.accounts.mint.key();
         let vault_sol_bump = ctx.bumps.vault_sol_pda;
         let vault_sol_seeds: &[&[u8]] = &[VAULT_SOL_SEED, mint_key.as_ref(), &[vault_sol_bump]];
@@ -205,8 +195,6 @@ pub mod grokpad {
             ),
             refund_net,
         )?;
-
-        // State updates.
         state.platform_fee_accrued = state
             .platform_fee_accrued
             .checked_add(platform_fee)
@@ -227,26 +215,31 @@ pub mod grokpad {
             .supply_remaining
             .checked_add(amount)
             .ok_or(GrokError::Overflow)?;
+        emit!(SellEvent {
+            mint: state.mint,
+            seller: ctx.accounts.seller.key(),
+            amount,
+            refund_net,
+            platform_fee,
+            creator_fee,
+            reserves_after: state.reserves_lamports,
+            tokens_sold_after: state.tokens_sold,
+        });
         Ok(())
     }
 
     pub fn withdraw_fees(ctx: Context<WithdrawFees>) -> Result<()> {
         let state = &mut ctx.accounts.state_pda;
-        // Verify recipients
         require_keys_eq!(ctx.accounts.platform_fee_recipient.key(), state.platform_fee_recipient, GrokError::InvalidOwner);
         require_keys_eq!(ctx.accounts.creator.key(), state.creator, GrokError::InvalidOwner);
-        // Nothing to do
         if state.platform_fee_accrued == 0 && state.creator_fee_accrued == 0 { return Ok(()); }
-
-        // Ensure vault owned by system
         require!(ctx.accounts.vault_sol_pda.owner == &system_program::ID, GrokError::InvalidOwner);
-        // Seeds for vault signer
         let mint_key = ctx.accounts.mint.key();
         let vault_sol_bump = ctx.bumps.vault_sol_pda;
         let vault_sol_seeds: &[&[u8]] = &[VAULT_SOL_SEED, mint_key.as_ref(), &[vault_sol_bump]];
-
-        // Platform fee transfer
-        if state.platform_fee_accrued > 0 { 
+        let mut platform_withdrawn = 0;
+        let mut creator_withdrawn = 0;
+        if state.platform_fee_accrued > 0 {
             let amount = state.platform_fee_accrued;
             anchor_lang::system_program::transfer(
                 CpiContext::new_with_signer(
@@ -260,10 +253,10 @@ pub mod grokpad {
                 amount,
             )?;
             state.reserves_lamports = state.reserves_lamports.checked_sub(amount).ok_or(GrokError::Underflow)?;
+            platform_withdrawn = amount;
             state.platform_fee_accrued = 0;
         }
-        // Creator fee transfer
-        if state.creator_fee_accrued > 0 { 
+        if state.creator_fee_accrued > 0 {
             let amount = state.creator_fee_accrued;
             anchor_lang::system_program::transfer(
                 CpiContext::new_with_signer(
@@ -277,9 +270,20 @@ pub mod grokpad {
                 amount,
             )?;
             state.reserves_lamports = state.reserves_lamports.checked_sub(amount).ok_or(GrokError::Underflow)?;
+            creator_withdrawn = amount;
             state.creator_fee_accrued = 0;
         }
+        if platform_withdrawn == 0 && creator_withdrawn == 0 { return Ok(()); }
+        emit!(WithdrawFeesEvent { mint: state.mint, platform_withdrawn, creator_withdrawn });
+        Ok(())
+    }
 
+    pub fn graduate(ctx: Context<Graduate>) -> Result<()> {
+        let state = &mut ctx.accounts.state_pda;
+        require!(!state.graduated, GrokError::LaunchGraduated);
+        require!(state.reserves_lamports >= state.graduation_target_lamports, GrokError::NotYetGraduate);
+        state.graduated = true;
+        emit!(GraduateEvent { mint: state.mint, reserves_lamports: state.reserves_lamports, tokens_sold: state.tokens_sold });
         Ok(())
     }
 }
@@ -346,7 +350,7 @@ pub struct InitializeLaunch<'info> {
         seeds = [VAULT_SOL_SEED, mint.key().as_ref()],
         bump
     )]
-    pub vault_sol_pda: UncheckedAccount<'info>, // changed from SystemAccount to avoid macro bug
+    pub vault_sol_pda: UncheckedAccount<'info>, // reverted to UncheckedAccount
 
     #[account(
         init,
@@ -383,7 +387,7 @@ pub struct Buy<'info> {
         seeds = [VAULT_SOL_SEED, mint.key().as_ref()],
         bump
     )]
-    pub vault_sol_pda: UncheckedAccount<'info>, // changed from SystemAccount
+    pub vault_sol_pda: UncheckedAccount<'info>, // reverted
     #[account(
         mut,
         associated_token::mint = mint,
@@ -428,7 +432,7 @@ pub struct Sell<'info> {
         seeds = [VAULT_SOL_SEED, mint.key().as_ref()],
         bump
     )]
-    pub vault_sol_pda: UncheckedAccount<'info>, // changed from SystemAccount
+    pub vault_sol_pda: UncheckedAccount<'info>, // reverted
     #[account(
         mut,
         associated_token::mint = mint,
@@ -467,7 +471,7 @@ pub struct WithdrawFees<'info> {
         seeds = [VAULT_SOL_SEED, mint.key().as_ref()],
         bump
     )]
-    pub vault_sol_pda: UncheckedAccount<'info>,
+    pub vault_sol_pda: UncheckedAccount<'info>, // reverted
     /// CHECK: validated against state
     #[account(mut)]
     pub platform_fee_recipient: UncheckedAccount<'info>,
@@ -476,6 +480,26 @@ pub struct WithdrawFees<'info> {
     pub creator: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
+
+#[derive(Accounts)]
+pub struct Graduate<'info> {
+    pub caller: Signer<'info>,
+    pub mint: Account<'info, Mint>,
+    #[account(mut, seeds = [STATE_SEED, mint.key().as_ref()], bump)]
+    pub state_pda: Account<'info, LaunchState>,
+}
+
+// EVENTS
+#[event]
+pub struct InitializeEvent { pub mint: Pubkey, pub base_price: u64, pub slope: u64, pub graduation_target_lamports: u64 }
+#[event]
+pub struct BuyEvent { pub mint: Pubkey, pub buyer: Pubkey, pub amount: u64, pub cost_lamports: u64, pub platform_fee: u64, pub creator_fee: u64, pub reserves_after: u64, pub tokens_sold_after: u64, pub graduated: bool }
+#[event]
+pub struct SellEvent { pub mint: Pubkey, pub seller: Pubkey, pub amount: u64, pub refund_net: u64, pub platform_fee: u64, pub creator_fee: u64, pub reserves_after: u64, pub tokens_sold_after: u64 }
+#[event]
+pub struct WithdrawFeesEvent { pub mint: Pubkey, pub platform_withdrawn: u64, pub creator_withdrawn: u64 }
+#[event]
+pub struct GraduateEvent { pub mint: Pubkey, pub reserves_lamports: u64, pub tokens_sold: u64 }
 
 /* ---------------- Helpers ---------------- */
 
@@ -523,4 +547,6 @@ pub enum GrokError {
     BumpNotFound,
     #[msg("Invalid owner")] // added for runtime check on vault_sol_pda
     InvalidOwner,
+    #[msg("Parameter out of allowed range")] InvalidParam,
+    #[msg("Not yet eligible to graduate")] NotYetGraduate,
 }

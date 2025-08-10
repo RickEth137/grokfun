@@ -7,10 +7,21 @@ edition = "2021"
 crate-type = ["cdylib","lib"]
 
 [dependencies]
-anchor-lang = "0.30.1"
-anchor-spl = "0.30.1"
+anchor-lang = { version = "0.31.1" }
+anchor-spl = { version = "0.31.1", features = ["token", "associated_token"] }
 
 [features]
 no-entrypoint = []
-idl-build = []
-test = []
+idl-build = ["anchor-spl/idl-build"]
+cpi = []
+custom-heap = []
+custom-panic = []
+anchor-debug = []
+no-idl = []
+no-log-ix-name = []
+# Provide deployment feature set without idl-build (avoids anchor-lang-idl & regex)
+# Switch default to exclude idl-build for production size
+default = ["no-idl"]
+
+[package.metadata.anchor]
+idl = true

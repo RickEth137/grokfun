@@ -2,14 +2,42 @@
 target/
 .anchor/
 *.log
+**/*.rs.bk
+.cargo/
 
 # Do NOT commit private keys
 *-keypair.json
+derived-keypair.json
 target/deploy/*-keypair.json
+**/id.json
+**/*.keypair
+**/wallet.json
 
 # Local files
 .DS_Store
 .vscode/
 .env
 .env.*
-node_modules
+node_modules/
+
+# Solana test validator artifacts
+test-ledger/
+test-validator/
+
+# Build outputs
+dist/
+build/
+
+# Generated files
+*.bin
+*.tar.bz2
+*.sst
+
+# Lock files
+yarn-debug.log
+yarn-error.log
+npm-debug.log
+*.pdb
+
+# Keep package.json and package-lock.json (but allow changes)
+# We'll selectively commit these files separately if needed

@@ -1,5 +1,5 @@
 [programs.localnet]
-grokpad = "PQghCjXvt7v7YYDo4rsgWJzxEQhSJmFLGjM5DPikuJE"
+grokpad = "CYUSvq2vmNZ4rcyhfKyfaTKvfeH3doxyqx69ifV3w3TP"
 
 [registry]
 url = "https://api.apr.dev"
@@ -10,6 +10,9 @@ wallet = "~/.config/solana/id.json"
 
 [scripts]
 test = "anchor test"
+
+[toolchain]
+anchor_version = "0.31.1"
 
 [build]
 verifiable = false
